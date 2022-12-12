@@ -1,9 +1,8 @@
-
 import logging
 import os
 import time
 from http import HTTPStatus
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 import telegram
@@ -14,9 +13,9 @@ from exceptions import (ApiResponseError, EnvironmentVariablesError,
 
 load_dotenv()
 
-PRACTICUM_TOKEN: str = os.getenv('PRACTICUM_TOKEN')
-TELEGRAM_TOKEN: str = os.getenv('TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID: str = os.getenv('TELEGRAM_CHAT_ID')
+PRACTICUM_TOKEN: Optional[str] = os.getenv('PRACTICUM_TOKEN')
+TELEGRAM_TOKEN: Optional[str] = os.getenv('TELEGRAM_TOKEN')
+TELEGRAM_CHAT_ID: Optional[str] = os.getenv('TELEGRAM_CHAT_ID')
 
 RETRY_PERIOD: int = 600
 ENDPOINT: str = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
@@ -47,7 +46,7 @@ def check_tokens() -> None:
     """
     Проверяет доступность переменных окружения.
     """
-    missing_variables: List[Tuple[str]] = list(
+    missing_variables: List[Tuple[str, str]] = list(
         filter(
             lambda x: x[0] is None, (
                 (PRACTICUM_TOKEN, 'PRACTICUM_TOKEN'),
@@ -56,7 +55,7 @@ def check_tokens() -> None:
             )
         )
     )
-    
+
     if missing_variables:
         message_err: str = ', '.join([var[1] for var in missing_variables])
         logger.critical(
@@ -74,7 +73,7 @@ def send_message(bot: telegram.Bot, message: str) -> None:
         bot.send_message(TELEGRAM_CHAT_ID, message)
         logger.debug(
             f'Бот отправил сообщение "{message}"'
-            )
+        )
     except Exception as telegram_error:
         logger.error(
             'Ошибка отправки сообщения в Telegram пользователя.',
@@ -82,7 +81,7 @@ def send_message(bot: telegram.Bot, message: str) -> None:
         )
         raise SendTelegramMessageError(
             f'!!! {telegram_error} !!!'
-            )
+        )
 
 
 def get_api_answer(timestamp: int) -> API_RESPONSE_STRUCTURE:
@@ -113,7 +112,7 @@ def check_response(response: API_RESPONSE_STRUCTURE) -> None:
     """
     if not (isinstance(response, Dict)):
         raise TypeError('Структура данных ответа не соответствует ожиданиям.')
-    if not 'homeworks' in response:
+    if not response.get('homeworks'):
         raise KeyError('Ответ API не содержит данных о домашней работе.')
     if not isinstance(response.get('homeworks'), list):
         raise TypeError(
@@ -160,7 +159,7 @@ def main() -> None:
         try:
             api_response: API_RESPONSE_STRUCTURE = get_api_answer(timestamp)
             check_response(api_response)
-            
+
             timestamp += RETRY_PERIOD
             all_user_homework = api_response['homeworks']
 
