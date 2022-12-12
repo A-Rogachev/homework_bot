@@ -2,7 +2,6 @@
 import logging
 import os
 import time
-from datetime import datetime
 from http import HTTPStatus
 from typing import Any, Dict, List, Tuple
 
@@ -12,17 +11,6 @@ from dotenv import load_dotenv
 
 from exceptions import (ApiResponseError, EnvironmentVariablesError,
                         SendTelegramMessageError)
-
-logger: logging.Logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-handler: logging.Handler = logging.StreamHandler()
-logger.addHandler(handler)
-
-formatter: logging.Formatter = logging.Formatter(
-    '%(asctime)s %(levelname)s %(message)s',
-)
-handler.setFormatter(formatter)
 
 load_dotenv()
 
@@ -41,6 +29,19 @@ HOMEWORK_VERDICTS: Dict[str, str] = {
     'rejected': 'Работа проверена: у ревьюера есть замечания.'
 }
 
+API_RESPONSE_STRUCTURE = Dict[str, List[Dict[str, Any]]]
+
+logger: logging.Logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+handler: logging.Handler = logging.StreamHandler()
+logger.addHandler(handler)
+
+formatter: logging.Formatter = logging.Formatter(
+    '%(asctime)s %(levelname)s %(message)s',
+)
+handler.setFormatter(formatter)
+
 
 def check_tokens() -> None:
     """
@@ -58,7 +59,7 @@ def check_tokens() -> None:
     
     if missing_variables:
         message_err: str = ', '.join([var[1] for var in missing_variables])
-        logging.critical(
+        logger.critical(
             f'Отсутствуют следующие переменные окружения: {message_err}. '
             'Программа принудительно остановлена.'
         )
@@ -74,13 +75,17 @@ def send_message(bot: telegram.Bot, message: str) -> None:
         logger.debug(
             f'Бот отправил сообщение "{message}"'
             )
-    except Exception:
-        raise SendTelegramMessageError(
-            'Ошибка отправки сообщения в Telegram пользователя.'
+    except Exception as telegram_error:
+        logger.error(
+            'Ошибка отправки сообщения в Telegram пользователя.',
+            exc_info=True,
         )
+        raise SendTelegramMessageError(
+            f'!!! {telegram_error} !!!'
+            )
 
 
-def get_api_answer(timestamp: int) -> Dict[str, Any]:
+def get_api_answer(timestamp: int) -> API_RESPONSE_STRUCTURE:
     """
     Делает запрос к эндпоинту API-сервиса.
     """
@@ -102,7 +107,7 @@ def get_api_answer(timestamp: int) -> Dict[str, Any]:
     return api_response.json()
 
 
-def check_response(response: Dict[str, Any]) -> Dict[str, str]:
+def check_response(response: API_RESPONSE_STRUCTURE) -> None:
     """
     Проверяет ответ API на соответствие документации.
     """
@@ -116,33 +121,25 @@ def check_response(response: Dict[str, Any]) -> Dict[str, str]:
             'не соответствует инструкции.'
         )
 
-    if not response.get('homeworks'):
-        raise IndexError(
-            f'На дату {datetime.fromtimestamp(response["current_date"])} '
-            'нет информации о домашней работе пользователя.'
-        )
-
-    return response.get('homeworks')[0]
-
 
 def parse_status(homework: Dict[str, Any]) -> str:
     """
     Извлекает из информации о дом. работе статус этой работы.
     """
-    if 'homework_name' not in homework:
-        raise KeyError('В ответе API нет названия домашней работы')
-    else:
-        homework_name = homework.get('homework_name')
+    try:
+        homework_name: str = homework['homework_name']
+    except KeyError:
+        raise ApiResponseError('В ответе API нет названия дом работы.')
 
-    if 'status' not in homework:
-        raise KeyError('В ответе API нет названия статуса')
-    else:
-        status_name = homework.get('status')
+    try:
+        status_name: str = homework['status']
+    except KeyError:
+        raise ApiResponseError('В ответе API нет названия статуса')
 
-    if status_name in HOMEWORK_VERDICTS:
-        verdict = HOMEWORK_VERDICTS.get(status_name)
-    else:
-        raise KeyError('Такого статуса нет в словаре')
+    try:
+        verdict: str = HOMEWORK_VERDICTS[status_name]
+    except KeyError:
+        raise ApiResponseError('Неизвестный статус дом. работы.')
 
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
@@ -154,20 +151,37 @@ def main() -> None:
     check_tokens()
 
     bot: telegram.Bot = telegram.Bot(token=TELEGRAM_TOKEN)
-    timestamp: int = int(time.time()) - RETRY_PERIOD
-    # timestamp: int = 0
+    timestamp: int = int(time.time())
+
+    last_message: str = ''
+    last_error_message: str = ''
 
     while True:
         try:
-            api_response: Dict[str, Any] = get_api_answer(timestamp)
-            checked_response: Dict[str, str] = check_response(api_response)
-
-            message_from_api: str = parse_status(checked_response)
-            send_message(bot, message_from_api)
+            api_response: API_RESPONSE_STRUCTURE = get_api_answer(timestamp)
+            check_response(api_response)
             
+            timestamp += RETRY_PERIOD
+            all_user_homework = api_response['homeworks']
+
+            if all_user_homework:
+                message_from_api: str = parse_status(all_user_homework[0])
+
+                if message_from_api != last_message:
+                    last_message = message_from_api
+                    send_message(bot, message_from_api)
+                else:
+                    logger.debug('Новые статусы домашней работы отсутствуют.')
+            else:
+                logger.debug('Список домашних работ пуст')
+
         except Exception as error:
-            message: str = f'Сбой в работе программы: {error}'
-            logger.error(message, exc_info=True)
+            error_message: str = f'Сбой в работе программы: {error}'
+            logger.error(error_message)
+            if error_message != last_error_message:
+                send_message(bot, error_message)
+                last_error_message = error_message
+
         finally:
             time.sleep(RETRY_PERIOD)
 
