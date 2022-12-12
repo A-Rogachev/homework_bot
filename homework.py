@@ -2,15 +2,16 @@
 import logging
 import os
 import time
+from datetime import datetime
 from http import HTTPStatus
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 import requests
 import telegram
 from dotenv import load_dotenv
 
-from exceptions import ApiResponseException, EnvVariablesException, IncorrectHomeworkKey
-
+from exceptions import (ApiResponseError, EnvironmentVariablesError,
+                        SendTelegramMessageError)
 
 logger: logging.Logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -42,71 +43,92 @@ HOMEWORK_VERDICTS: Dict[str, str] = {
 
 
 def check_tokens() -> None:
-    """Проверяет доступность переменных окружения."""
-    if not all(
-        (
-            PRACTICUM_TOKEN,
-            TELEGRAM_CHAT_ID,
-            TELEGRAM_TOKEN,
+    """
+    Проверяет доступность переменных окружения.
+    """
+    missing_variables: List[Tuple[str]] = list(
+        filter(
+            lambda x: x[0] is None, (
+                (PRACTICUM_TOKEN, 'PRACTICUM_TOKEN'),
+                (TELEGRAM_CHAT_ID, 'TELEGRAM_CHAT_ID'),
+                (TELEGRAM_TOKEN, 'TELEGRAM_TOKEN'),
+            )
         )
-    ):
+    )
+    
+    if missing_variables:
+        message_err: str = ', '.join([var[1] for var in missing_variables])
         logging.critical(
-            'Отсутствует обязательная переменная окружения: "TELEGRAM_CHAT_ID"',
-            exc_info=True,
+            f'Отсутствуют следующие переменные окружения: {message_err}. '
+            'Программа принудительно остановлена.'
         )
-
-        raise EnvVariablesException(
-            'Проверьте переменных окружения. Бот завершает работу'
-        )
+        raise EnvironmentVariablesError('Проверьте переменные окружения.')
 
 
 def send_message(bot: telegram.Bot, message: str) -> None:
-    """Отправляет сообщение в Telegram чат."""
+    """
+    Отправляет сообщение в Telegram чат.
+    """
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
+        logger.debug(
+            f'Бот отправил сообщение "{message}"'
+            )
     except Exception:
-        logging.error(
-            'Ошибка отправки сообщения в Telegram пользователя.',
-            exc_info=True,
-        )
-    else:
-        logging.debug(
-            'Сообщение успешно отправлено в Telegram пользователя.',
-            exc_info=True,
+        raise SendTelegramMessageError(
+            'Ошибка отправки сообщения в Telegram пользователя.'
         )
 
 
-def get_api_answer(timestamp: int) -> Dict['str', Any]:
-    """Делает запрос к эндпоинту API-сервиса."""
+def get_api_answer(timestamp: int) -> Dict[str, Any]:
+    """
+    Делает запрос к эндпоинту API-сервиса.
+    """
     try:
-        api_response: Dict['str', Any] = requests.get(
+        api_response: Dict[str, Any] = requests.get(
             ENDPOINT,
             headers=HEADERS,
             params={'from_date': timestamp},
         )
     except requests.exceptions.RequestException:
-        raise ApiResponseException('Запрос к API завершился ошибкой')
-
+        raise ApiResponseError(
+            'При обработке запроса к API произошла ошибка.'
+        )
     if api_response.status_code != HTTPStatus.OK:
-        raise ApiResponseException('Запрос не был завершен')
-
+        raise ApiResponseError(
+            f'Эндпоинт {ENDPOINT} недоступен ('
+            f'Код ответа: {api_response.status_code})'
+        )
     return api_response.json()
 
 
-def check_response(response: Dict['str', Any]) -> Dict['str', Any]:
-    """Проверяет ответ API на соответствие документации."""
+def check_response(response: Dict[str, Any]) -> Dict[str, str]:
+    """
+    Проверяет ответ API на соответствие документации.
+    """
     if not (isinstance(response, Dict)):
-        raise TypeError('Структура данных ответа не соответствует ожиданиям')
+        raise TypeError('Структура данных ответа не соответствует ожиданиям.')
     if not 'homeworks' in response:
-        raise KeyError('Ответ API не соответствует документации')
+        raise KeyError('Ответ API не содержит данных о домашней работе.')
     if not isinstance(response.get('homeworks'), list):
-        raise TypeError('Структура данных ответа о дом. работе не соответствует инструкции')
+        raise TypeError(
+            'Структура данных о домашней работе '
+            'не соответствует инструкции.'
+        )
+
+    if not response.get('homeworks'):
+        raise IndexError(
+            f'На дату {datetime.fromtimestamp(response["current_date"])} '
+            'нет информации о домашней работе пользователя.'
+        )
+
     return response.get('homeworks')[0]
 
 
-def parse_status(homework: Dict['str', Any]) -> str:
-    """Извлекает из информации о дом. работе статус этой работы."""
-
+def parse_status(homework: Dict[str, Any]) -> str:
+    """
+    Извлекает из информации о дом. работе статус этой работы.
+    """
     if 'homework_name' not in homework:
         raise KeyError('В ответе API нет названия домашней работы')
     else:
@@ -126,25 +148,26 @@ def parse_status(homework: Dict['str', Any]) -> str:
 
 
 def main() -> None:
-    """Основная логика работы бота."""
+    """
+    Основная логика работы бота.
+    """
     check_tokens()
 
     bot: telegram.Bot = telegram.Bot(token=TELEGRAM_TOKEN)
     timestamp: int = int(time.time()) - RETRY_PERIOD
-    timestamp: int = 0 # TODO: позже убрать !!!!!!!!!!!!!!!!!!!!!!!
+    # timestamp: int = 0
 
     while True:
         try:
-            api_response: Dict['str', Any] = get_api_answer(timestamp)
-            checked_response = check_response(api_response)
+            api_response: Dict[str, Any] = get_api_answer(timestamp)
+            checked_response: Dict[str, str] = check_response(api_response)
 
             message_from_api: str = parse_status(checked_response)
             send_message(bot, message_from_api)
-
+            
         except Exception as error:
             message: str = f'Сбой в работе программы: {error}'
             logger.error(message, exc_info=True)
-
         finally:
             time.sleep(RETRY_PERIOD)
 

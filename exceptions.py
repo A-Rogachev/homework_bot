@@ -1,10 +1,16 @@
-class EnvVariablesException(Exception):
-    """Класс-исключение для теста переменных окружения"""
+class EnvironmentVariablesError(Exception):
+    """
+    Класс-исключение для обработки ошибок, 
+    связанных с переменными окружения.
+    """
 
 
-class ApiResponseException(Exception):
-    """Класс-исключение для некорректного ответа от API"""
+class ApiResponseError(Exception):
+    """
+    Класс-исключение для некорректного ответа от API.
+    """
 
-
-class IncorrectHomeworkKey(Exception):
-    pass
+class SendTelegramMessageError(Exception):
+    """
+    Класс-исключение для работы с Телеграм-ботом.
+    """
