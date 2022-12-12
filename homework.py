@@ -43,9 +43,7 @@ handler.setFormatter(formatter)
 
 
 def check_tokens() -> None:
-    """
-    Проверяет доступность переменных окружения.
-    """
+    """Проверяет доступность переменных окружения."""
     missing_variables: List[Tuple[str, str]] = list(
         filter(
             lambda x: x[0] is None, (
@@ -66,9 +64,7 @@ def check_tokens() -> None:
 
 
 def send_message(bot: telegram.Bot, message: str) -> None:
-    """
-    Отправляет сообщение в Telegram чат.
-    """
+    """Отправляет сообщение в Telegram чат."""
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
         logger.debug(
@@ -85,9 +81,7 @@ def send_message(bot: telegram.Bot, message: str) -> None:
 
 
 def get_api_answer(timestamp: int) -> API_RESPONSE_STRUCTURE:
-    """
-    Делает запрос к эндпоинту API-сервиса.
-    """
+    """Делает запрос к эндпоинту API-сервиса."""
     try:
         api_response: Dict[str, Any] = requests.get(
             ENDPOINT,
@@ -107,9 +101,7 @@ def get_api_answer(timestamp: int) -> API_RESPONSE_STRUCTURE:
 
 
 def check_response(response: API_RESPONSE_STRUCTURE) -> None:
-    """
-    Проверяет ответ API на соответствие документации.
-    """
+    """Проверяет ответ API на соответствие документации."""
     if not (isinstance(response, Dict)):
         raise TypeError('Структура данных ответа не соответствует ожиданиям.')
     if not response.get('homeworks'):
@@ -122,9 +114,7 @@ def check_response(response: API_RESPONSE_STRUCTURE) -> None:
 
 
 def parse_status(homework: Dict[str, Any]) -> str:
-    """
-    Извлекает из информации о дом. работе статус этой работы.
-    """
+    """Извлекает из информации о дом. работе статус этой работы."""
     try:
         homework_name: str = homework['homework_name']
     except KeyError:
@@ -144,9 +134,7 @@ def parse_status(homework: Dict[str, Any]) -> str:
 
 
 def main() -> None:
-    """
-    Основная логика работы бота.
-    """
+    """Основная логика работы бота."""
     check_tokens()
 
     bot: telegram.Bot = telegram.Bot(token=TELEGRAM_TOKEN)
