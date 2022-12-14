@@ -8,8 +8,7 @@ import requests
 import telegram
 from dotenv import load_dotenv
 
-from exceptions import (ApiResponseError, EnvironmentVariablesError,
-                        SendTelegramMessageError)
+from exceptions import ApiResponseError, EnvironmentVariablesError
 
 load_dotenv()
 
@@ -29,6 +28,7 @@ HOMEWORK_VERDICTS: Dict[str, str] = {
 }
 
 API_RESPONSE_STRUCTURE = Dict[str, List[Dict[str, Any]]]
+HOMEWORKS_STRUCTURE = Optional[List[Dict[str, Any]]]
 
 logger: logging.Logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -44,18 +44,18 @@ handler.setFormatter(formatter)
 
 def check_tokens() -> None:
     """Проверяет доступность переменных окружения."""
-    missing_variables: List[Tuple[str, str]] = list(
-        filter(
-            lambda x: x[0] is None, (
-                (PRACTICUM_TOKEN, 'PRACTICUM_TOKEN'),
-                (TELEGRAM_CHAT_ID, 'TELEGRAM_CHAT_ID'),
-                (TELEGRAM_TOKEN, 'TELEGRAM_TOKEN'),
-            )
-        )
-    )
+    token_name_value_list: List[Tuple[str, Optional[str]]] = [
+        ('PRACTICUM_TOKEN', PRACTICUM_TOKEN),
+        ('TELEGRAM_CHAT_ID', TELEGRAM_CHAT_ID),
+        ('TELEGRAM_TOKEN', TELEGRAM_TOKEN),
+    ]
 
-    if missing_variables:
-        message_err: str = ', '.join([var[1] for var in missing_variables])
+    missing_tokens: List[str] = [
+        token_name for token_name, value in token_name_value_list if not value
+    ]
+
+    if missing_tokens:
+        message_err: str = ', '.join([token for token in missing_tokens])
         logger.critical(
             f'Отсутствуют следующие переменные окружения: {message_err}. '
             'Программа принудительно остановлена.'
@@ -67,16 +67,16 @@ def send_message(bot: telegram.Bot, message: str) -> None:
     """Отправляет сообщение в Telegram чат."""
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
-        logger.debug(
-            f'Бот отправил сообщение "{message}"'
-        )
-    except Exception as telegram_error:
+    except telegram.TelegramError as tg_error:
+        print('я здесь')
         logger.error(
-            'Ошибка отправки сообщения в Telegram пользователя.',
+            'Ошибка отправки сообщения в Telegram пользователя: '
+            f'({tg_error}).',
             exc_info=True,
         )
-        raise SendTelegramMessageError(
-            f'!!! {telegram_error} !!!'
+    else:
+        logger.debug(
+            f'Бот отправил сообщение "{message}"'
         )
 
 
@@ -88,47 +88,62 @@ def get_api_answer(timestamp: int) -> API_RESPONSE_STRUCTURE:
             headers=HEADERS,
             params={'from_date': timestamp},
         )
-    except requests.exceptions.RequestException:
+
+        if api_response.status_code != HTTPStatus.OK:
+            raise ApiResponseError(
+                f'Эндпоинт {ENDPOINT} недоступен ('
+                f'Код ответа: {api_response.status_code})'
+            )
+        api_response_content: API_RESPONSE_STRUCTURE = api_response.json()
+
+    except requests.exceptions.JSONDecodeError:
         raise ApiResponseError(
-            'При обработке запроса к API произошла ошибка.'
+            'Ошибка декодирования данных ответа формата json.'
         )
-    if api_response.status_code != HTTPStatus.OK:
+    except requests.exceptions.RequestException as request_error:
         raise ApiResponseError(
-            f'Эндпоинт {ENDPOINT} недоступен ('
-            f'Код ответа: {api_response.status_code})'
+            'При обработке запроса к API произошла ошибка '
+            f'({request_error}).'
         )
-    return api_response.json()
+    else:
+        return api_response_content
 
 
-def check_response(response: API_RESPONSE_STRUCTURE) -> None:
+def check_response(response: API_RESPONSE_STRUCTURE) -> HOMEWORKS_STRUCTURE:
     """Проверяет ответ API на соответствие документации."""
-    if not (isinstance(response, Dict)):
-        raise TypeError('Структура данных ответа не соответствует ожиданиям.')
+    if not (isinstance(response, dict)):
+        raise TypeError(
+            f'Структура ответа API ({type(response)}), '
+            'не соответствует ожидаемому (словарь).'
+        )
     if not response.get('homeworks'):
         raise KeyError('Ответ API не содержит данных о домашней работе.')
+    if not response.get('current_date'):
+        raise KeyError('Ответ API не содержит данных о текущей дате.')
     if not isinstance(response.get('homeworks'), list):
         raise TypeError(
             'Структура данных о домашней работе '
             'не соответствует инструкции.'
         )
+    return response.get('homeworks')
 
 
 def parse_status(homework: Dict[str, Any]) -> str:
     """Извлекает из информации о дом. работе статус этой работы."""
-    try:
+    if 'homework_name' in homework:
         homework_name: str = homework['homework_name']
-    except KeyError:
-        raise ApiResponseError('В ответе API нет названия дом работы.')
+    else:
+        raise KeyError('В ответе API нет названия домашней работы.')
 
-    try:
+    if 'status' in homework:
         status_name: str = homework['status']
-    except KeyError:
-        raise ApiResponseError('В ответе API нет названия статуса')
+    else:
+        raise KeyError('В ответе API нет названия статуса')
 
-    try:
+    if status_name in HOMEWORK_VERDICTS:
         verdict: str = HOMEWORK_VERDICTS[status_name]
-    except KeyError:
-        raise ApiResponseError('Неизвестный статус дом. работы.')
+    else:
+        raise KeyError('Неизвестный статус дом. работы.')
 
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
@@ -139,35 +154,30 @@ def main() -> None:
 
     bot: telegram.Bot = telegram.Bot(token=TELEGRAM_TOKEN)
     timestamp: int = int(time.time())
-
     last_message: str = ''
-    last_error_message: str = ''
 
     while True:
         try:
             api_response: API_RESPONSE_STRUCTURE = get_api_answer(timestamp)
-            check_response(api_response)
-
-            timestamp += RETRY_PERIOD
-            all_user_homework = api_response['homeworks']
+            all_user_homework: HOMEWORKS_STRUCTURE = check_response(
+                api_response
+            )
 
             if all_user_homework:
                 message_from_api: str = parse_status(all_user_homework[0])
 
                 if message_from_api != last_message:
-                    last_message = message_from_api
+                    last_message: str = message_from_api
                     send_message(bot, message_from_api)
-                else:
-                    logger.debug('Новые статусы домашней работы отсутствуют.')
-            else:
-                logger.debug('Список домашних работ пуст')
+
+            timestamp: int = api_response.get('current_date')
 
         except Exception as error:
             error_message: str = f'Сбой в работе программы: {error}'
             logger.error(error_message)
-            if error_message != last_error_message:
+            if error_message != last_message:
                 send_message(bot, error_message)
-                last_error_message = error_message
+                last_message: str = error_message
 
         finally:
             time.sleep(RETRY_PERIOD)

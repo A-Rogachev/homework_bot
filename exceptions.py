@@ -9,8 +9,3 @@ class ApiResponseError(Exception):
     """
     Класс-исключение для некорректного ответа от API.
     """
-
-class SendTelegramMessageError(Exception):
-    """
-    Класс-исключение для работы с Телеграм-ботом.
-    """
