@@ -2,7 +2,8 @@ import logging
 import os
 import time
 from http import HTTPStatus
-from typing import Any, Dict, List, Optional, Tuple
+from traceback import TracebackException
+from typing import Any, Dict, List, Optional
 
 import requests
 import telegram
@@ -44,14 +45,12 @@ handler.setFormatter(formatter)
 
 def check_tokens() -> None:
     """Проверяет доступность переменных окружения."""
-    token_name_value_list: List[Tuple[str, Optional[str]]] = [
-        ('PRACTICUM_TOKEN', PRACTICUM_TOKEN),
-        ('TELEGRAM_CHAT_ID', TELEGRAM_CHAT_ID),
-        ('TELEGRAM_TOKEN', TELEGRAM_TOKEN),
-    ]
-
     missing_tokens: List[str] = [
-        token_name for token_name, value in token_name_value_list if not value
+        token for token in (
+            'PRACTICUM_TOKEN',
+            'TELEGRAM_CHAT_ID',
+            'TELEGRAM_TOKEN',
+        ) if not globals().get(token)
     ]
 
     if missing_tokens:
@@ -68,11 +67,9 @@ def send_message(bot: telegram.Bot, message: str) -> None:
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
     except telegram.TelegramError as tg_error:
-        print('я здесь')
         logger.error(
             'Ошибка отправки сообщения в Telegram пользователя: '
             f'({tg_error}).',
-            exc_info=True,
         )
     else:
         logger.debug(
@@ -94,19 +91,19 @@ def get_api_answer(timestamp: int) -> API_RESPONSE_STRUCTURE:
                 f'Эндпоинт {ENDPOINT} недоступен ('
                 f'Код ответа: {api_response.status_code})'
             )
-        api_response_content: API_RESPONSE_STRUCTURE = api_response.json()
 
-    except requests.exceptions.JSONDecodeError:
+        return api_response.json()
+
+    except requests.exceptions.JSONDecodeError as json_err:
         raise ApiResponseError(
             'Ошибка декодирования данных ответа формата json.'
+            f'{"".join(TracebackException.from_exception(json_err).format())}'
         )
     except requests.exceptions.RequestException as request_error:
         raise ApiResponseError(
             'При обработке запроса к API произошла ошибка '
             f'({request_error}).'
         )
-    else:
-        return api_response_content
 
 
 def check_response(response: API_RESPONSE_STRUCTURE) -> HOMEWORKS_STRUCTURE:
@@ -118,8 +115,15 @@ def check_response(response: API_RESPONSE_STRUCTURE) -> HOMEWORKS_STRUCTURE:
         )
     if not response.get('homeworks'):
         raise KeyError('Ответ API не содержит данных о домашней работе.')
+
     if not response.get('current_date'):
-        raise KeyError('Ответ API не содержит данных о текущей дате.')
+        logger.debug('Ответ API не содержит данных о текущей дате.')
+    else:
+        if not isinstance(response.get('current_date'), int):
+            raise TypeError(
+                'Тип значения по ключу current_date не является целым числом.'
+            )
+
     if not isinstance(response.get('homeworks'), list):
         raise TypeError(
             'Структура данных о домашней работе '
@@ -130,20 +134,17 @@ def check_response(response: API_RESPONSE_STRUCTURE) -> HOMEWORKS_STRUCTURE:
 
 def parse_status(homework: Dict[str, Any]) -> str:
     """Извлекает из информации о дом. работе статус этой работы."""
-    if 'homework_name' in homework:
-        homework_name: str = homework['homework_name']
-    else:
+    if 'homework_name' not in homework:
         raise KeyError('В ответе API нет названия домашней работы.')
-
-    if 'status' in homework:
-        status_name: str = homework['status']
-    else:
+    if 'status' not in homework:
         raise KeyError('В ответе API нет названия статуса')
 
-    if status_name in HOMEWORK_VERDICTS:
-        verdict: str = HOMEWORK_VERDICTS[status_name]
-    else:
+    homework_name: str = homework['homework_name']
+    status_name: str = homework['status']
+
+    if status_name not in HOMEWORK_VERDICTS:
         raise KeyError('Неизвестный статус дом. работы.')
+    verdict: str = HOMEWORK_VERDICTS[status_name]
 
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
@@ -170,7 +171,9 @@ def main() -> None:
                     last_message: str = message_from_api
                     send_message(bot, message_from_api)
 
-            timestamp: int = api_response.get('current_date')
+            current_date: Optional[int] = api_response.get('current_date')
+            if current_date:
+                timestamp: int = api_response.get('current_date')
 
         except Exception as error:
             error_message: str = f'Сбой в работе программы: {error}'
