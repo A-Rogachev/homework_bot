@@ -2,14 +2,14 @@ import logging
 import os
 import time
 from http import HTTPStatus
-from traceback import TracebackException
 from typing import Any, Dict, List, Optional
 
 import requests
 import telegram
 from dotenv import load_dotenv
 
-from exceptions import ApiResponseError, EnvironmentVariablesError
+from exceptions import (ApiCurrentDateError, ApiResponseError,
+                        EnvironmentVariablesError)
 
 load_dotenv()
 
@@ -20,7 +20,6 @@ TELEGRAM_CHAT_ID: Optional[str] = os.getenv('TELEGRAM_CHAT_ID')
 RETRY_PERIOD: int = 600
 ENDPOINT: str = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 HEADERS: Dict[str, str] = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
-
 
 HOMEWORK_VERDICTS: Dict[str, str] = {
     'approved': 'Работа проверена: ревьюеру всё понравилось. Ура!',
@@ -33,7 +32,6 @@ HOMEWORKS_STRUCTURE = Optional[List[Dict[str, Any]]]
 
 logger: logging.Logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
-
 handler: logging.Handler = logging.StreamHandler()
 logger.addHandler(handler)
 
@@ -52,7 +50,6 @@ def check_tokens() -> None:
             'TELEGRAM_TOKEN',
         ) if not globals().get(token)
     ]
-
     if missing_tokens:
         message_err: str = ', '.join([token for token in missing_tokens])
         logger.critical(
@@ -85,19 +82,16 @@ def get_api_answer(timestamp: int) -> API_RESPONSE_STRUCTURE:
             headers=HEADERS,
             params={'from_date': timestamp},
         )
-
         if api_response.status_code != HTTPStatus.OK:
             raise ApiResponseError(
                 f'Эндпоинт {ENDPOINT} недоступен ('
                 f'Код ответа: {api_response.status_code})'
             )
-
         return api_response.json()
-
     except requests.exceptions.JSONDecodeError as json_err:
         raise ApiResponseError(
-            'Ошибка декодирования данных ответа формата json.'
-            f'{"".join(TracebackException.from_exception(json_err).format())}'
+            'Ошибка декодирования данных ответа формата JSON '
+            f'({json_err}).'
         )
     except requests.exceptions.RequestException as request_error:
         raise ApiResponseError(
@@ -115,15 +109,14 @@ def check_response(response: API_RESPONSE_STRUCTURE) -> HOMEWORKS_STRUCTURE:
         )
     if not response.get('homeworks'):
         raise KeyError('Ответ API не содержит данных о домашней работе.')
-
     if not response.get('current_date'):
-        logger.debug('Ответ API не содержит данных о текущей дате.')
-    else:
-        if not isinstance(response.get('current_date'), int):
-            raise TypeError(
-                'Тип значения по ключу current_date не является целым числом.'
-            )
-
+        raise ApiCurrentDateError(
+            'Ответ API не содержит данных о текущей дате.'
+        )
+    if not isinstance(response.get('current_date'), int):
+        raise ApiCurrentDateError(
+            'Тип значения по ключу current_date не является целым числом.'
+        )
     if not isinstance(response.get('homeworks'), list):
         raise TypeError(
             'Структура данных о домашней работе '
@@ -143,45 +136,38 @@ def parse_status(homework: Dict[str, Any]) -> str:
     status_name: str = homework['status']
 
     if status_name not in HOMEWORK_VERDICTS:
-        raise KeyError('Неизвестный статус дом. работы.')
+        raise ValueError('Неизвестный статус дом. работы.')
     verdict: str = HOMEWORK_VERDICTS[status_name]
-
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
 def main() -> None:
     """Основная логика работы бота."""
     check_tokens()
-
     bot: telegram.Bot = telegram.Bot(token=TELEGRAM_TOKEN)
     timestamp: int = int(time.time())
     last_message: str = ''
-
+    
     while True:
         try:
             api_response: API_RESPONSE_STRUCTURE = get_api_answer(timestamp)
             all_user_homework: HOMEWORKS_STRUCTURE = check_response(
                 api_response
             )
-
             if all_user_homework:
                 message_from_api: str = parse_status(all_user_homework[0])
-
                 if message_from_api != last_message:
                     last_message: str = message_from_api
                     send_message(bot, message_from_api)
-
-            current_date: Optional[int] = api_response.get('current_date')
-            if current_date:
-                timestamp: int = api_response.get('current_date')
-
+            timestamp: int = api_response.get('current_date')
+        except ApiCurrentDateError as error:
+            logger.error(f'Сбой в работе программы: {error}')
         except Exception as error:
             error_message: str = f'Сбой в работе программы: {error}'
             logger.error(error_message)
             if error_message != last_message:
                 send_message(bot, error_message)
                 last_message: str = error_message
-
         finally:
             time.sleep(RETRY_PERIOD)
 
