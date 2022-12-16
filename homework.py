@@ -147,7 +147,7 @@ def main() -> None:
     bot: telegram.Bot = telegram.Bot(token=TELEGRAM_TOKEN)
     timestamp: int = int(time.time())
     last_message: str = ''
-    
+
     while True:
         try:
             api_response: API_RESPONSE_STRUCTURE = get_api_answer(timestamp)
